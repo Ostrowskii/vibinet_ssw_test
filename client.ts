@@ -1,5 +1,3 @@
-import { WebSocket } from "ws";
-
 type TimeSync = {
   clock_offset: number;     // difference between server clock and local clock
   lowest_ping: number;      // best round-trip time achieved so far
@@ -18,24 +16,53 @@ const ws = new WebSocket("ws://localhost:8080");
 type MessageHandler = (message: any) => void;
 const room_watchers = new Map<string, MessageHandler>();
 
+// Queue for messages sent before connection is ready
+const pending_messages: string[] = [];
+let is_ready = false;
+
 function now(): number {
   return Math.floor(Date.now());
 }
 
 export function server_time(): number {
+  // If not synced yet, return local time
+  if (!isFinite(time_sync.clock_offset)) {
+    return now();
+  }
   return Math.floor(now() + time_sync.clock_offset);
 }
 
+// Helper to send message (queues if not ready)
+function send(message: string): void {
+  if (is_ready && ws.readyState === WebSocket.OPEN) {
+    ws.send(message);
+  } else {
+    pending_messages.push(message);
+  }
+}
+
 // Setup time sync
-ws.on("open", () => {
+ws.addEventListener("open", () => {
+  console.log("[WS] Connected");
+  is_ready = true;
+
+  // Send all pending messages
+  while (pending_messages.length > 0) {
+    const message = pending_messages.shift();
+    if (message) {
+      ws.send(message);
+    }
+  }
+
+  // Start time sync
   setInterval(() => {
     time_sync.request_sent_at = now();
     ws.send(JSON.stringify({ $: "get_time" }));
   }, 2000);
 });
 
-ws.on("message", (data) => {
-  const message = JSON.parse(data.toString());
+ws.addEventListener("message", (event) => {
+  const message = JSON.parse(event.data);
 
   switch (message.$) {
     case "info_time": {
@@ -62,7 +89,7 @@ ws.on("message", (data) => {
 // API Functions
 
 export function post(room: string, data: any): void {
-  ws.send(JSON.stringify({$: "post", room, time: server_time(), data}));
+  send(JSON.stringify({$: "post", room, time: server_time(), data}));
 }
 
 export function load(room: string, from: number = 0, handler?: MessageHandler): void {
@@ -72,7 +99,7 @@ export function load(room: string, from: number = 0, handler?: MessageHandler): 
     }
     room_watchers.set(room, handler);
   }
-  ws.send(JSON.stringify({$: "load", room, from}));
+  send(JSON.stringify({$: "load", room, from}));
 }
 
 export function watch(room: string, handler?: MessageHandler): void {
@@ -82,12 +109,12 @@ export function watch(room: string, handler?: MessageHandler): void {
     }
     room_watchers.set(room, handler);
   }
-  ws.send(JSON.stringify({$: "watch", room}));
+  send(JSON.stringify({$: "watch", room}));
 }
 
 export function unwatch(room: string): void {
   room_watchers.delete(room);
-  ws.send(JSON.stringify({$: "unwatch", room}));
+  send(JSON.stringify({$: "unwatch", room}));
 }
 
 export function close(): void {

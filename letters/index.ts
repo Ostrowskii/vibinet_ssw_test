@@ -1,4 +1,4 @@
-import { StateMachine } from "./state_machine.js";
+import { StateMachine } from "../state_machine.js";
 
 // Player type
 type Player = {

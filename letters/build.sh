@@ -1,10 +1,15 @@
 #!/bin/bash
 
-# Build TypeScript files to JavaScript
+# Build TypeScript files to JavaScript in dist/
 echo "Building TypeScript files..."
 
-bun build client_web.ts --outdir . --target=browser --format=esm
-bun build state_machine.ts --outdir . --target=browser --format=esm
-bun build letters.ts --outdir . --target=browser --format=esm
+# Build from root
+cd ..
+bun build client.ts --outdir letters/dist --target=browser --format=esm
+bun build state_machine.ts --outdir letters/dist --target=browser --format=esm
 
-echo "Build complete! Open index.html in your browser."
+# Build from letters
+cd letters
+bun build index.ts --outdir dist --target=browser --format=esm
+
+echo "Build complete! Open index.html in your browser or run 'bun run letters:serve'."

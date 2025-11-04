@@ -27,3 +27,4 @@ pnpm-debug.log*
 
 # Database files
 db/
+letters/dist/

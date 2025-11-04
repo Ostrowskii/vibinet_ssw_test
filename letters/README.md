@@ -2,6 +2,23 @@
 
 A simple multiplayer game demo built with the StateMachine system. Players control letters that move around a 2D space.
 
+## Project Structure
+
+```
+letters/
+├── index.ts          # Game logic (state, on_tick, on_post)
+├── index.html        # Game UI with canvas
+├── build.sh          # Build script
+├── serve.ts          # HTTP server
+├── dist/             # Compiled JavaScript files
+│   ├── client.js
+│   ├── state_machine.js
+│   └── index.js
+└── README.md         # This file
+```
+
+The game imports `state_machine.ts` and `client.ts` from the parent directory, keeping the code DRY and organized.
+
 ## How to Play
 
 ### 1. Start the WebSocket Server
@@ -18,6 +35,8 @@ From the root directory:
 bun run letters:build
 ```
 
+This compiles TypeScript to JavaScript in `letters/dist/`.
+
 ### 3. Start the Game Server
 
 From the root directory:
@@ -31,7 +50,7 @@ Open http://localhost:3000 in your browser. You'll be prompted for:
 - Room name (join the same room to play with others)
 - Your nickname (must be a single character)
 
-### 4. Controls
+### 5. Controls
 
 - **W** - Move up
 - **A** - Move left

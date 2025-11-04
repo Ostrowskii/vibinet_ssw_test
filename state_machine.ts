@@ -1,4 +1,4 @@
-import * as client from "./client.ts";
+import * as client from "./client.js";
 
 type Post<P> = {
   room: string;
