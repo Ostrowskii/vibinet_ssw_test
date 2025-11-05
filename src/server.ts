@@ -31,11 +31,16 @@ const server = http.createServer(async (req, res) => {
     let filesystem_path: string;
     filesystem_path = path.startsWith("/dist/") ? `walkers${path}` : `walkers${path}`;
 
-    const ct = path.endsWith(".html") ? "text/html" :
-               path.endsWith(".js")   ? "application/javascript" :
-               path.endsWith(".css")  ? "text/css" :
-               path.endsWith(".map")  ? "application/json" :
-               "application/octet-stream";
+    let ct = "application/octet-stream";
+    if (path.endsWith(".html")) {
+      ct = "text/html";
+    } else if (path.endsWith(".js")) {
+      ct = "application/javascript";
+    } else if (path.endsWith(".css")) {
+      ct = "text/css";
+    } else if (path.endsWith(".map")) {
+      ct = "application/json";
+    }
 
     const data = await readFile(filesystem_path);
     res.writeHead(200, { "Content-Type": ct });
@@ -54,9 +59,13 @@ function now(): number {
 
 const watchers = new Map<string, Set<WebSocket>>();
 
-setInterval(() => { console.log("Server time:", now()); }, 1000);
+setInterval(() => {
+  console.log("Server time:", now());
+}, 1000);
 
-if (!existsSync("./db")) mkdirSync("./db");
+if (!existsSync("./db")) {
+  mkdirSync("./db");
+}
 
 wss.on("connection", (ws) => {
   ws.on("message", (buffer) => {
@@ -72,6 +81,7 @@ wss.on("connection", (ws) => {
         const name        = message.name;
         const data        = message.data;
         const path        = `./db/${room}.jsonl`;
+
         let index = 0;
         if (existsSync(path)) {
           const content = readFileSync(path, "utf-8");
@@ -81,11 +91,14 @@ wss.on("connection", (ws) => {
         const file_line = JSON.stringify({ server_time, client_time, name, data });
         appendFileSync(path, file_line + "\n");
         console.log("Post received:", { room, data });
+
         const room_watchers = watchers.get(room);
         if (room_watchers) {
           const info = { $: "info_post", room, index, server_time, client_time, name, data };
           const json = JSON.stringify(info);
-          for (const watcher of room_watchers) watcher.send(json);
+          for (const watcher of room_watchers) {
+            watcher.send(json);
+          }
         }
         break;
       }
@@ -113,15 +126,26 @@ wss.on("connection", (ws) => {
       }
       case "watch": {
         const room = message.room;
-        if (!watchers.has(room)) watchers.set(room, new Set());
+
+        if (!watchers.has(room)) {
+          watchers.set(room, new Set());
+        }
+
         watchers.get(room)!.add(ws);
         console.log("Watching:", { room });
         break;
       }
       case "unwatch": {
         const room = message.room;
-        const set = watchers.get(room);
-        if (set) { set.delete(ws); if (set.size === 0) watchers.delete(room); }
+        const set  = watchers.get(room);
+
+        if (set) {
+          set.delete(ws);
+          if (set.size === 0) {
+            watchers.delete(room);
+          }
+        }
+
         console.log("Unwatching:", { room });
         break;
       }

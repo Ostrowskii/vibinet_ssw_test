@@ -20,14 +20,22 @@ const room_watchers = new Map<string, MessageHandler>();
 let is_synced = false;
 const sync_listeners: Array<() => void> = [];
 
-function now(): number { return Math.floor(Date.now()); }
+function now(): number {
+  return Math.floor(Date.now());
+}
 
 export function server_time(): number {
-  if (!isFinite(time_sync.clock_offset)) throw new Error("server_time() called before initial sync");
+  if (!isFinite(time_sync.clock_offset)) {
+    throw new Error("server_time() called before initial sync");
+  }
   return Math.floor(now() + time_sync.clock_offset);
 }
 
-function ensure_open(): void { if (ws.readyState !== WebSocket.OPEN) throw new Error("WebSocket not open"); }
+function ensure_open(): void {
+  if (ws.readyState !== WebSocket.OPEN) {
+    throw new Error("WebSocket not open");
+  }
+}
 
 export function send(obj: any): void {
   ensure_open();
@@ -35,10 +43,14 @@ export function send(obj: any): void {
 }
 
 function register_handler(room: string, handler?: MessageHandler): void {
-  if (!handler) return;
+  if (!handler) {
+    return;
+  }
+
   if (room_watchers.has(room)) {
     throw new Error(`Handler already registered for room: ${room}`);
   }
+
   room_watchers.set(room, handler);
 }
 
@@ -53,17 +65,21 @@ ws.addEventListener("open", () => {
 });
 
 ws.addEventListener("message", (event) => {
-  const message = JSON.parse(event.data);
-  switch (message.$) {
+  const msg = JSON.parse(event.data);
+
+  switch (msg.$) {
     case "info_time": {
-      const time = now();
-      const ping = time - time_sync.request_sent_at;
+      const t    = now();
+      const ping = t - time_sync.request_sent_at;
+
       time_sync.last_ping = ping;
+
       if (ping < time_sync.lowest_ping) {
-        const local_avg_time   = Math.floor((time_sync.request_sent_at + time) / 2);
-        time_sync.clock_offset = message.time - local_avg_time;
+        const local_avg    = Math.floor((time_sync.request_sent_at + t) / 2);
+        time_sync.clock_offset = msg.time - local_avg;
         time_sync.lowest_ping  = ping;
       }
+
       if (!is_synced) {
         is_synced = true;
         for (const cb of sync_listeners) {
@@ -73,10 +89,11 @@ ws.addEventListener("message", (event) => {
       }
       break;
     }
+
     case "info_post": {
-      const handler = room_watchers.get(message.room);
+      const handler = room_watchers.get(msg.room);
       if (handler) {
-        handler(message);
+        handler(msg);
       }
       break;
     }
@@ -85,22 +102,23 @@ ws.addEventListener("message", (event) => {
 
 // API
 export function gen_name(): string {
-  const alphabet = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
-  const bytes = new Uint8Array(8);
-
+  const alphabet   = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+  const bytes      = new Uint8Array(8);
   const can_crypto = typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function";
+
   if (can_crypto) {
     crypto.getRandomValues(bytes);
   } else {
-    for (let idx = 0; idx < 8; idx++) {
-      bytes[idx] = Math.floor(Math.random() * 256);
+    for (let i = 0; i < 8; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
     }
   }
 
   let out = "";
-  for (let idx = 0; idx < 8; idx++) {
-    out += alphabet[bytes[idx] % 64];
+  for (let i = 0; i < 8; i++) {
+    out += alphabet[bytes[i] % 64];
   }
+
   return out;
 }
 
