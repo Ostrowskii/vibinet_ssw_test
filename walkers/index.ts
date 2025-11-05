@@ -24,10 +24,10 @@ type GamePost =
   | { $: "up"; key: "w" | "a" | "s" | "d"; player: string };
 
 // Game configuration
-const TICKS_PER_SECOND  = 24; // ticks per second
+const TICK_RATE         = 24; // ticks per second
 const TOLERANCE         = 300; // milliseconds
 const PIXELS_PER_SECOND = 200;
-const PIXELS_PER_TICK   = PIXELS_PER_SECOND / TICKS_PER_SECOND;
+const PIXELS_PER_TICK   = PIXELS_PER_SECOND / TICK_RATE;
 
 // Initial state: empty map
 const initial: GameState = {};
@@ -71,7 +71,7 @@ function on_post(post: GamePost, state: GameState): GameState {
 
 // Create and export game function
 export function create_game(room: string, smooth: (past: GameState, curr: GameState) => GameState) {
-  return new Vibi<GameState, GamePost>(room, initial, on_tick, on_post, smooth, TICKS_PER_SECOND, TOLERANCE);
+  return new Vibi<GameState, GamePost>(room, initial, on_tick, on_post, smooth, TICK_RATE, TOLERANCE);
 }
 
 // ---- App bootstrap (no JS in HTML) ----
@@ -135,15 +135,15 @@ on_sync(() => {
   window.addEventListener("keydown", handle_key_event);
   window.addEventListener("keyup", handle_key_event);
 
-  setInterval(render, 1000 / TICKS_PER_SECOND);
+  setInterval(render, 1000 / TICK_RATE);
 });
 
 function render() {
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  const present_tick = game.server_tick();
-  const state = game.compute_render_state();
+  const curr_tick = game.server_tick();
+  const state     = game.compute_render_state();
 
   ctx.fillStyle    = "#000";
   ctx.font         = "14px monospace";
@@ -157,7 +157,7 @@ function render() {
 
     ctx.fillText(`room: ${room}`, 8, 6);
     ctx.fillText(`time: ${st}`, 8, 24);
-    ctx.fillText(`tick: ${present_tick}`, 8, 42);
+    ctx.fillText(`tick: ${curr_tick}`, 8, 42);
     ctx.fillText(`post: ${pc}`, 8, 60);
 
     if (isFinite(rtt)) {

@@ -10,15 +10,15 @@ type Post<P> = {
 };
 
 export class Vibi<S, P> {
-  room:             string;
-  init:             S;
-  on_tick:          (state: S) => S;
-  on_post:          (post: P, state: S) => S;
-  smooth:           (past: S, curr: S) => S;
-  ticks_per_second: number;
-  tolerance:        number;
-  room_posts:       Map<number, Post<P>>;
-  local_posts:      Map<string, Post<P>>; // predicted local posts keyed by name
+  room:        string;
+  init:        S;
+  on_tick:     (state: S) => S;
+  on_post:     (post: P, state: S) => S;
+  smooth:      (past: S, curr: S) => S;
+  tick_rate:   number;
+  tolerance:   number;
+  room_posts:  Map<number, Post<P>>;
+  local_posts: Map<string, Post<P>>; // predicted local posts keyed by name
 
   // Compute the authoritative time a post takes effect.
   private official_time(post: Post<P>): number {
@@ -35,23 +35,23 @@ export class Vibi<S, P> {
   }
 
   constructor(
-    room:             string,
-    init:             S,
-    on_tick:          (state: S) => S,
-    on_post:          (post: P, state: S) => S,
-    smooth:           (past: S, curr: S) => S,
-    ticks_per_second: number,
-    tolerance:        number
+    room:      string,
+    init:      S,
+    on_tick:   (state: S) => S,
+    on_post:   (post: P, state: S) => S,
+    smooth:    (past: S, curr: S) => S,
+    tick_rate: number,
+    tolerance: number
   ) {
-    this.room             = room;
-    this.init             = init;
-    this.on_tick          = on_tick;
-    this.on_post          = on_post;
-    this.smooth           = smooth;
-    this.ticks_per_second = ticks_per_second;
-    this.tolerance        = tolerance;
-    this.room_posts       = new Map();
-    this.local_posts      = new Map();
+    this.room        = room;
+    this.init        = init;
+    this.on_tick     = on_tick;
+    this.on_post     = on_post;
+    this.smooth      = smooth;
+    this.tick_rate   = tick_rate;
+    this.tolerance   = tolerance;
+    this.room_posts  = new Map();
+    this.local_posts = new Map();
 
     // Wait for initial time sync before interacting with server
     client.on_sync(() => {
@@ -73,7 +73,7 @@ export class Vibi<S, P> {
   // No extra helpers needed with local_posts: simplicity preserved
 
   time_to_tick(server_time: number): number {
-    return Math.floor((server_time * this.ticks_per_second) / 1000);
+    return Math.floor((server_time * this.tick_rate) / 1000);
   }
 
   server_time(): number {
@@ -89,19 +89,19 @@ export class Vibi<S, P> {
     return this.room_posts.size;
   }
 
-  // Compute a render-ready state by blending authoritative past and present
+  // Compute a render-ready state by blending authoritative past and current
   // using the provided smooth(past, curr) function.
   compute_render_state(): S {
-    const present_tick = this.server_tick();
-    const tick_ms      = 1000 / this.ticks_per_second;
-    const tol_ticks    = Math.ceil(this.tolerance / tick_ms);
-    const rtt_ms       = client.ping();
-    const half_rtt     = isFinite(rtt_ms) ? Math.ceil((rtt_ms / 2) / tick_ms) : 0;
-    const past_ticks   = Math.max(tol_ticks, half_rtt + 1);
-    const past_tick    = Math.max(0, present_tick - past_ticks);
+    const curr_tick  = this.server_tick();
+    const tick_ms    = 1000 / this.tick_rate;
+    const tol_ticks  = Math.ceil(this.tolerance / tick_ms);
+    const rtt_ms     = client.ping();
+    const half_rtt   = isFinite(rtt_ms) ? Math.ceil((rtt_ms / 2) / tick_ms) : 0;
+    const past_ticks = Math.max(tol_ticks, half_rtt + 1);
+    const past_tick  = Math.max(0, curr_tick - past_ticks);
 
     const past_state = this.compute_state_at(past_tick);
-    const curr_state = this.compute_state_at(present_tick);
+    const curr_state = this.compute_state_at(curr_tick);
 
     return this.smooth(past_state, curr_state);
   }
