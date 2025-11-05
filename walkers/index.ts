@@ -148,21 +148,17 @@ on_sync(() => {
   console.log(`[GAME] Synced; spawning '${nick}' at (${spawn_x},${spawn_y})`);
   game.post({ $: "spawn", nick: nick, px: spawn_x, py: spawn_y });
 
-  window.addEventListener("keydown", (e) => {
+  const valid_keys = new Set(["w", "a", "s", "d"]);
+  function handle_key_event(e: KeyboardEvent) {
     const key = e.key.toLowerCase();
-    if ((key === "w" || key === "a" || key === "s" || key === "d") && !key_states[key]) {
-      key_states[key] = true;
-      game.post({ $: "down", key: key as any, player: nick });
-    }
-  });
-
-  window.addEventListener("keyup", (e) => {
-    const key = e.key.toLowerCase();
-    if ((key === "w" || key === "a" || key === "s" || key === "d") && key_states[key]) {
-      key_states[key] = false;
-      game.post({ $: "up", key: key as any, player: nick });
-    }
-  });
+    if (!valid_keys.has(key)) return;
+    const is_down = e.type === "keydown";
+    if (key_states[key] === is_down) return; // no state change (filters repeats)
+    key_states[key] = is_down;
+    game.post({ $: (is_down ? "down" : "up"), key: key as any, player: nick });
+  }
+  window.addEventListener("keydown", handle_key_event);
+  window.addEventListener("keyup", handle_key_event);
 
   console.log("[GAME] Starting render at 24 FPS");
   setInterval(render, FRAME_TIME);
