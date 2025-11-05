@@ -103,7 +103,7 @@ ws.addEventListener("message", (event) => {
 // API Functions
 
 // Generate 8-char name (48-bit) using base64url-like alphabet [_a-zA-Z0-9-]
-function gen_name(): string {
+export function gen_name(): string {
   const alphabet = "_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
   const bytes = new Uint8Array(8);
   if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {

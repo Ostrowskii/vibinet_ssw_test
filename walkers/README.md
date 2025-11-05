@@ -1,21 +1,21 @@
 # Walkers - Multiplayer Browser Game
 
-A simple multiplayer game demo built with the StateMachine system. Players control walkers (single-letter avatars) that move around a 2D space.
+A simple multiplayer game demo built with the Vibi system. Players control walkers (single-letter avatars) that move around a 2D space.
 
 ## Project Structure
 
 ```
 walkers/
-├── index.ts          # Game logic (state, on_tick, on_post)
-├── index.html        # Game UI with canvas
+├── index.ts          # Game logic + bootstrap (no JS in HTML)
+├── index.html        # Game UI with canvas (no inline JS)
 ├── dist/             # Compiled JavaScript files (built automatically)
 │   ├── client.js
-│   ├── state_machine.js
+│   ├── vibi.js
 │   └── index.js
 └── README.md         # This file
 ```
 
-The game imports `state_machine.ts` and `client.ts` from the parent directory, keeping the code DRY and organized.
+The game imports `vibi.ts` and `client.ts` from the parent directory, keeping the code DRY and organized.
 
 ## How to Play
 
@@ -31,7 +31,7 @@ The unified server builds the browser bundle automatically and serves the game U
 ### 2. Open the Game
 
 Open http://localhost:8080 in your browser. You'll be prompted for:
-- Room name (join the same room to play with others)
+- Room name (auto-generated if left blank)
 - Your nickname (must be a single character)
 
 ### 5. Controls
@@ -46,7 +46,7 @@ Open http://localhost:8080 in your browser. You'll be prompted for:
 - Each player spawns at a fixed position (200,200)
 - Movement speed: 200 pixels/second
 - Game runs at 24 ticks/second
-- Players are synchronized across all clients using the StateMachine
+- Players are synchronized across all clients using the Vibi state engine
 - All clients compute the same deterministic game state
 
 ## Technical Details
@@ -54,6 +54,6 @@ Open http://localhost:8080 in your browser. You'll be prompted for:
 - **State**: Map of character → player position and key states
 - **on_tick**: Updates positions based on WASD states
 - **on_post**: Handles spawn and key up/down events
-- **Tolerance**: 100ms for network lag compensation
+- **Tolerance**: 300ms for network lag compensation
 
 Open multiple browser windows/tabs with the same room name to see multiplayer in action!

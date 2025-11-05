@@ -86,6 +86,11 @@ export class Vibi<S, P> {
     return this.time_to_tick(this.server_time());
   }
 
+  // Total official posts loaded for this room
+  post_count(): number {
+    return this.room_posts.size;
+  }
+
   // Compute a render-ready state by blending authoritative past and present
   // using the provided smooth(past, curr) function.
   compute_render_state(): S {
