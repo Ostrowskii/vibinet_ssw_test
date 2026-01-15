@@ -19,6 +19,13 @@
 </head>
 <body>
   <canvas id="game"></canvas>
-  <script type="module" src="./dist/index.js"></script>
+  <script>
+    const href = window.location.href;
+    const base = href.endsWith("/") ? href : `${href}/`;
+    const script = document.createElement("script");
+    script.type = "module";
+    script.src = new URL("dist/index.js", base).toString();
+    document.body.appendChild(script);
+  </script>
 </body>
 </html>

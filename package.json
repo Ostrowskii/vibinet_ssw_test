@@ -3,6 +3,7 @@
   "type": "module",
   "scripts": {
     "check": "tsc --target esnext --noEmit --skipLibCheck",
+    "build": "bun build src/client.ts --outdir walkers/dist --target=browser --format=esm && bun build src/vibi.ts --outdir walkers/dist --target=browser --format=esm && bun build walkers/index.ts --outdir walkers/dist --target=browser --format=esm",
     "dev": "bun run index.ts",
     "server": "bun run src/server.ts",
     "client": "bun run client_cli.ts",
