@@ -70,8 +70,19 @@ function on_post(post: GamePost, state: GameState): GameState {
 }
 
 // Create and export game function
-export function create_game(room: string, smooth: (past: GameState, curr: GameState) => GameState) {
-  return new Vibi<GameState, GamePost>(room, initial, on_tick, on_post, smooth, TICK_RATE, TOLERANCE);
+export function create_game(
+  room: string,
+  smooth: (remote_state: GameState, local_state: GameState) => GameState
+) {
+  return new Vibi<GameState, GamePost>(
+    room,
+    initial,
+    on_tick,
+    on_post,
+    smooth,
+    TICK_RATE,
+    TOLERANCE
+  );
 }
 
 // ---- App bootstrap (no JS in HTML) ----
@@ -96,11 +107,11 @@ if (!nick || nick.length !== 1) {
 
 console.log("[GAME] Room:", room, "Nick:", nick);
 
-const smooth = (past: GameState, curr: GameState): GameState => {
-  if (!curr[nick]) {
-    return past;
+const smooth = (remote_state: GameState, local_state: GameState): GameState => {
+  if (!local_state[nick]) {
+    return remote_state;
   }
-  return { ...past, [nick]: curr[nick] };
+  return { ...remote_state, [nick]: local_state[nick] };
 };
 
 const game: Vibi<GameState, GamePost> = create_game(room, smooth);

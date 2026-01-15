@@ -1,5 +1,64 @@
 import * as client from "./client.ts";
 
+// # Vibi (multiplayer tick engine)
+// Vibi computes deterministic game state by replaying ticks and events.
+// State at tick T is: start at init, apply on_tick(state) for each tick,
+// then apply on_post(post, state) for every event in that tick. on_tick
+// and on_post must treat state as immutable; when caching is on,
+// smooth() must also avoid mutating its inputs.
+//
+// ## Time and ticks
+// Each post has client_time and server_time. official_time clamps early
+// client times to server_time - tolerance; otherwise it uses
+// client_time. official_tick = time_to_tick(official_time). Every client
+// applies the same rule, so a post maps to the same tick everywhere.
+//
+// ## Remote vs local events
+// Vibi keeps two sources: remote_posts (authoritative server posts,
+// keyed by index) and local_posts (predicted posts created locally for
+// instant response). Timeline buckets map tick -> { remote[], local[] }.
+// remote[] is sorted by post.index and applied first; local[] is applied
+// after it. When a server echo arrives with the same name, the local
+// post is removed so input is not applied twice. Duplicate remote posts
+// with the same index are ignored.
+//
+// ## Rendering and smooth()
+// Rendering uses two states. remote_state is the authoritative state at
+// a past tick (latency-adjusted); local_state is the state at the
+// current tick including local prediction. compute_render_state picks
+// remote_tick = curr_tick - max(tolerance_ticks, half_rtt_ticks + 1),
+// computes both states, then calls smooth(remote_state, local_state).
+// The game typically keeps remote players from remote_state and the
+// local player from local_state to hide jitter without delaying input.
+//
+// ## Caching (bounded window, default on)
+// With cache off, compute_state_at replays from initial_tick every call.
+// With cache on, snapshots are stored every snapshot_stride ticks and
+// only snapshot_count snapshots are kept (window = stride * count).
+// compute_state_at starts from the nearest snapshot <= at_tick and
+// advances at most (snapshot_stride - 1) ticks. Snapshots store state
+// objects without cloning because state is treated as immutable.
+//
+// Snapshots are keyed by tick. When a post changes a tick within the
+// window (add/remove, remote/local), snapshots at or after that tick
+// are dropped immediately. The next compute_state_at rebuilds them
+// forward from the last remaining snapshot. Posts older than the window
+// are ignored, and timeline/post data before snapshot_start_tick is
+// pruned to bound memory.
+//
+// ## Correctness sketch
+// official_tick is deterministic given post fields and config. Remote
+// posts are applied in index order; local posts are removed on echo, so
+// no input is applied twice. Snapshot recomputation replays the same
+// on_tick/on_post sequence as a full replay, so cached and uncached
+// results match within the window. Ticks older than the window clamp to
+// the oldest snapshot.
+//
+// ## Complexity
+// Cache off: time O(ticks + posts), space O(posts).
+// Cache on: time O(snapshot_stride) per call, space
+// O(snapshot_count * |S| + posts_in_window).
+
 type Post<P> = {
   room: string;
   index: number;
@@ -10,39 +69,28 @@ type Post<P> = {
 };
 
 type TimelineBucket<P> = {
-  room: Post<P>[];
+  remote: Post<P>[];
   local: Post<P>[];
 };
 
-type RoomPostInfo<P> = {
-  post: Post<P>;
-  tick: number;
-};
-
-type LocalPostInfo<P> = {
-  post: Post<P>;
-  tick: number;
-};
-
 export class Vibi<S, P> {
-  room:              string;
-  init:              S;
-  on_tick:           (state: S) => S;
-  on_post:           (post: P, state: S) => S;
-  smooth:            (past: S, curr: S) => S;
-  tick_rate:         number;
-  tolerance:         number;
-  room_posts:        Map<number, RoomPostInfo<P>>;
-  local_posts:       Map<string, LocalPostInfo<P>>; // predicted local posts keyed by name
-  timeline:          Map<number, TimelineBucket<P>>;
-  cache_enabled:     boolean;
-  snapshot_stride:   number;
-  snapshot_count:    number;
-  snapshots:         S[];
+  room:                string;
+  init:                S;
+  on_tick:             (state: S) => S;
+  on_post:             (post: P, state: S) => S;
+  smooth:              (remote: S, local: S) => S;
+  tick_rate:           number;
+  tolerance:           number;
+  remote_posts:        Map<number, Post<P>>;
+  local_posts:         Map<string, Post<P>>;
+  timeline:            Map<number, TimelineBucket<P>>;
+  cache_enabled:       boolean;
+  snapshot_stride:     number;
+  snapshot_count:      number;
+  snapshots:           Map<number, S>;
   snapshot_start_tick: number | null;
-  dirty_from_tick:   number | null;
-  initial_time_value: number | null;
-  initial_tick_value: number | null;
+  initial_time_value:  number | null;
+  initial_tick_value:  number | null;
 
   // Compute the authoritative time a post takes effect.
   private official_time(post: Post<P>): number {
@@ -58,62 +106,50 @@ export class Vibi<S, P> {
     return this.time_to_tick(this.official_time(post));
   }
 
+  // Get or create the timeline bucket for a tick.
   private get_bucket(tick: number): TimelineBucket<P> {
     let bucket = this.timeline.get(tick);
     if (!bucket) {
-      bucket = { room: [], local: [] };
+      bucket = { remote: [], local: [] };
       this.timeline.set(tick, bucket);
     }
     return bucket;
   }
 
-  private insert_room_post(post: Post<P>, tick: number): void {
+  // Insert an authoritative post into a tick bucket (kept sorted by index).
+  private insert_remote_post(post: Post<P>, tick: number): void {
     const bucket = this.get_bucket(tick);
-    const room   = bucket.room;
-
-    if (room.length === 0 || room[room.length - 1].index <= post.index) {
-      room.push(post);
-    } else {
-      const insert_at = room.findIndex((p) => p.index > post.index);
-      if (insert_at === -1) {
-        room.push(post);
-      } else {
-        room.splice(insert_at, 0, post);
-      }
-    }
+    bucket.remote.push(post);
+    bucket.remote.sort((a, b) => a.index - b.index);
   }
 
-  private remove_room_post(post: Post<P>, tick: number): void {
-    const bucket = this.timeline.get(tick);
-    if (!bucket) {
-      return;
-    }
-    const index = bucket.room.indexOf(post);
-    if (index !== -1) {
-      bucket.room.splice(index, 1);
-    } else {
-      const by_index = bucket.room.findIndex((p) => p.index === post.index);
-      if (by_index !== -1) {
-        bucket.room.splice(by_index, 1);
-      }
-    }
-    if (bucket.room.length === 0 && bucket.local.length === 0) {
-      this.timeline.delete(tick);
-    }
-  }
-
-  private mark_dirty(tick: number): void {
+  // Drop snapshots at or after tick; earlier snapshots remain valid.
+  private invalidate_from_tick(tick: number): void {
     if (!this.cache_enabled) {
       return;
     }
-    if (this.snapshot_start_tick !== null && tick < this.snapshot_start_tick) {
+    const start_tick = this.snapshot_start_tick;
+    if (start_tick !== null && tick < start_tick) {
       return;
     }
-    if (this.dirty_from_tick === null || tick < this.dirty_from_tick) {
-      this.dirty_from_tick = tick;
+    if (start_tick === null || this.snapshots.size === 0) {
+      return;
+    }
+    const stride = this.snapshot_stride;
+    const end_tick = start_tick + (this.snapshots.size - 1) * stride;
+    if (tick > end_tick) {
+      return;
+    }
+    if (tick <= start_tick) {
+      this.snapshots.clear();
+      return;
+    }
+    for (let t = end_tick; t >= tick; t -= stride) {
+      this.snapshots.delete(t);
     }
   }
 
+  // Apply on_tick/on_post from (from_tick, to_tick] to advance a state.
   private advance_state(state: S, from_tick: number, to_tick: number): S {
     let next = state;
     for (let tick = from_tick + 1; tick <= to_tick; tick++) {
@@ -122,6 +158,7 @@ export class Vibi<S, P> {
     return next;
   }
 
+  // Drop all cached timeline/post data older than prune_tick.
   private prune_before_tick(prune_tick: number): void {
     if (!this.cache_enabled) {
       return;
@@ -131,18 +168,19 @@ export class Vibi<S, P> {
         this.timeline.delete(tick);
       }
     }
-    for (const [index, info] of this.room_posts.entries()) {
-      if (info.tick < prune_tick) {
-        this.room_posts.delete(index);
+    for (const [index, post] of this.remote_posts.entries()) {
+      if (this.official_tick(post) < prune_tick) {
+        this.remote_posts.delete(index);
       }
     }
-    for (const [name, info] of this.local_posts.entries()) {
-      if (info.tick < prune_tick) {
+    for (const [name, post] of this.local_posts.entries()) {
+      if (this.official_tick(post) < prune_tick) {
         this.local_posts.delete(name);
       }
     }
   }
 
+  // Ensure snapshots exist through at_tick, filling forward as needed.
   private ensure_snapshots(at_tick: number, initial_tick: number): void {
     if (!this.cache_enabled) {
       return;
@@ -150,106 +188,111 @@ export class Vibi<S, P> {
     if (this.snapshot_start_tick === null) {
       this.snapshot_start_tick = initial_tick;
     }
-    if (this.snapshot_start_tick === null) {
+    let start_tick = this.snapshot_start_tick;
+    if (start_tick === null) {
       return;
     }
-    let start_tick = this.snapshot_start_tick;
-    if (this.dirty_from_tick !== null) {
-      const dirty = this.dirty_from_tick;
-      if (dirty >= start_tick) {
-        const keep_until_tick = dirty - 1;
-        const keep_index = Math.floor((keep_until_tick - start_tick) / this.snapshot_stride);
-        if (keep_index < 0) {
-          this.snapshots.length = 0;
-        } else if (keep_index < this.snapshots.length - 1) {
-          this.snapshots.length = keep_index + 1;
-        }
-      }
-      this.dirty_from_tick = null;
-    }
-
     if (at_tick < start_tick) {
       return;
     }
 
-    const target_index = Math.floor((at_tick - start_tick) / this.snapshot_stride);
+    const stride = this.snapshot_stride;
+    const target_tick =
+      start_tick + Math.floor((at_tick - start_tick) / stride) * stride;
     let state: S;
     let current_tick: number;
 
-    if (this.snapshots.length === 0) {
+    if (this.snapshots.size === 0) {
       state = this.init;
       current_tick = start_tick - 1;
     } else {
-      state = this.snapshots[this.snapshots.length - 1];
-      current_tick = start_tick + (this.snapshots.length - 1) * this.snapshot_stride;
+      const end_tick = start_tick + (this.snapshots.size - 1) * stride;
+      state = this.snapshots.get(end_tick) as S;
+      current_tick = end_tick;
     }
 
-    for (let idx = this.snapshots.length; idx <= target_index; idx++) {
-      const next_tick = start_tick + idx * this.snapshot_stride;
+    for (
+      let next_tick = current_tick + stride;
+      next_tick <= target_tick;
+      next_tick += stride
+    ) {
       state = this.advance_state(state, current_tick, next_tick);
-      this.snapshots.push(state);
+      this.snapshots.set(next_tick, state);
       current_tick = next_tick;
     }
 
-    if (this.snapshots.length > this.snapshot_count) {
-      const overflow = this.snapshots.length - this.snapshot_count;
-      this.snapshots.splice(0, overflow);
-      start_tick += overflow * this.snapshot_stride;
+    const count = this.snapshots.size;
+    if (count > this.snapshot_count) {
+      const overflow = count - this.snapshot_count;
+      const drop_until = start_tick + overflow * stride;
+      for (let t = start_tick; t < drop_until; t += stride) {
+        this.snapshots.delete(t);
+      }
+      start_tick = drop_until;
+      this.snapshot_start_tick = start_tick;
     }
 
-    this.snapshot_start_tick = start_tick;
     this.prune_before_tick(start_tick);
   }
 
-  private add_room_post(post: Post<P>): void {
+  // Add or replace an authoritative post and update the timeline.
+  private add_remote_post(post: Post<P>): void {
     const tick = this.official_tick(post);
+
     if (post.index === 0 && this.initial_time_value === null) {
       const t = this.official_time(post);
       this.initial_time_value = t;
       this.initial_tick_value = this.time_to_tick(t);
     }
-    if (this.cache_enabled && this.snapshot_start_tick !== null && tick < this.snapshot_start_tick) {
+
+    const before_window =
+      this.cache_enabled &&
+      this.snapshot_start_tick !== null &&
+      tick < this.snapshot_start_tick;
+    if (before_window) {
       return;
     }
 
-    const existing = this.room_posts.get(post.index);
-    if (existing) {
-      this.remove_room_post(existing.post, existing.tick);
-      this.room_posts.set(post.index, { post, tick });
-      this.insert_room_post(post, tick);
-      this.mark_dirty(Math.min(existing.tick, tick));
+    if (this.remote_posts.has(post.index)) {
       return;
     }
 
-    this.room_posts.set(post.index, { post, tick });
-    this.insert_room_post(post, tick);
-    this.mark_dirty(tick);
+    this.remote_posts.set(post.index, post);
+    this.insert_remote_post(post, tick);
+    this.invalidate_from_tick(tick);
   }
 
+  // Add a local predicted post (applied after remote posts for the same tick).
   private add_local_post(name: string, post: Post<P>): void {
     if (this.local_posts.has(name)) {
       this.remove_local_post(name);
     }
 
     const tick = this.official_tick(post);
-    if (this.cache_enabled && this.snapshot_start_tick !== null && tick < this.snapshot_start_tick) {
+    const before_window =
+      this.cache_enabled &&
+      this.snapshot_start_tick !== null &&
+      tick < this.snapshot_start_tick;
+    if (before_window) {
       return;
     }
-    this.local_posts.set(name, { post, tick });
+    this.local_posts.set(name, post);
     this.get_bucket(tick).local.push(post);
-    this.mark_dirty(tick);
+    this.invalidate_from_tick(tick);
   }
 
+  // Remove a local predicted post once the authoritative echo arrives.
   private remove_local_post(name: string): void {
-    const info = this.local_posts.get(name);
-    if (!info) {
+    const post = this.local_posts.get(name);
+    if (!post) {
       return;
     }
     this.local_posts.delete(name);
 
-    const bucket = this.timeline.get(info.tick);
+    const tick = this.official_tick(post);
+    const bucket = this.timeline.get(tick);
     if (bucket) {
-      const index = bucket.local.indexOf(info.post);
+      const index = bucket.local.indexOf(post);
       if (index !== -1) {
         bucket.local.splice(index, 1);
       } else {
@@ -258,19 +301,20 @@ export class Vibi<S, P> {
           bucket.local.splice(by_name, 1);
         }
       }
-      if (bucket.room.length === 0 && bucket.local.length === 0) {
-        this.timeline.delete(info.tick);
+      if (bucket.remote.length === 0 && bucket.local.length === 0) {
+        this.timeline.delete(tick);
       }
     }
 
-    this.mark_dirty(info.tick);
+    this.invalidate_from_tick(tick);
   }
 
+  // Apply on_tick plus any posts for a single tick.
   private apply_tick(state: S, tick: number): S {
     let next = this.on_tick(state);
     const bucket = this.timeline.get(tick);
     if (bucket) {
-      for (const post of bucket.room) {
+      for (const post of bucket.remote) {
         next = this.on_post(post.data, next);
       }
       for (const post of bucket.local) {
@@ -280,6 +324,7 @@ export class Vibi<S, P> {
     return next;
   }
 
+  // Recompute state from scratch without caching.
   private compute_state_at_uncached(initial_tick: number, at_tick: number): S {
     let state = this.init;
     for (let tick = initial_tick; tick <= at_tick; tick++) {
@@ -288,47 +333,49 @@ export class Vibi<S, P> {
     return state;
   }
 
+  // Create a Vibi instance and hook the client sync/load/watch callbacks.
   constructor(
     room:      string,
     init:      S,
     on_tick:   (state: S) => S,
     on_post:   (post: P, state: S) => S,
-    smooth:    (past: S, curr: S) => S,
+    smooth:    (remote: S, local: S) => S,
     tick_rate: number,
     tolerance: number,
     cache:     boolean = true,
     snapshot_stride: number = 8,
     snapshot_count:  number = 256
   ) {
-    this.room              = room;
-    this.init              = init;
-    this.on_tick           = on_tick;
-    this.on_post           = on_post;
-    this.smooth            = smooth;
-    this.tick_rate         = tick_rate;
-    this.tolerance         = tolerance;
-    this.room_posts        = new Map();
-    this.local_posts       = new Map();
-    this.timeline          = new Map();
-    this.cache_enabled     = cache;
-    this.snapshot_stride   = Math.max(1, Math.floor(snapshot_stride));
-    this.snapshot_count    = Math.max(1, Math.floor(snapshot_count));
-    this.snapshots         = [];
-    this.snapshot_start_tick = null;
-    this.dirty_from_tick   = null;
-    this.initial_time_value = null;
-    this.initial_tick_value = null;
+    // Initialize configuration, caches, and timeline.
+    this.room                 = room;
+    this.init                 = init;
+    this.on_tick              = on_tick;
+    this.on_post              = on_post;
+    this.smooth               = smooth;
+    this.tick_rate            = tick_rate;
+    this.tolerance            = tolerance;
+    this.remote_posts         = new Map();
+    this.local_posts          = new Map();
+    this.timeline             = new Map();
+    this.cache_enabled        = cache;
+    this.snapshot_stride      = Math.max(1, Math.floor(snapshot_stride));
+    this.snapshot_count       = Math.max(1, Math.floor(snapshot_count));
+    this.snapshots            = new Map();
+    this.snapshot_start_tick  = null;
+    this.initial_time_value   = null;
+    this.initial_tick_value   = null;
 
     // Wait for initial time sync before interacting with server
     client.on_sync(() => {
       console.log(`[VIBI] synced; watching+loading room=${this.room}`);
-      // Watch the room with callback
+      // Watch the room with callback.
       client.watch(this.room, (post) => {
-        // If this official post matches a local predicted one, drop the local copy
+        // If this official post matches a local predicted one, drop the local
+        // copy.
         if (post.name) {
           this.remove_local_post(post.name);
         }
-        this.add_room_post(post);
+        this.add_remote_post(post);
       });
 
       // Load all existing posts
@@ -336,54 +383,60 @@ export class Vibi<S, P> {
     });
   }
 
+  // Convert a server-time timestamp to a tick index.
   time_to_tick(server_time: number): number {
     return Math.floor((server_time * this.tick_rate) / 1000);
   }
 
+  // Read the synchronized server time.
   server_time(): number {
     return client.server_time();
   }
 
+  // Read the current server tick.
   server_tick(): number {
     return this.time_to_tick(this.server_time());
   }
 
-  // Total official posts loaded for this room
+  // Total authoritative remote posts retained (bounded with cache).
   post_count(): number {
-    return this.room_posts.size;
+    return this.remote_posts.size;
   }
 
-  // Compute a render-ready state by blending authoritative past and current
-  // using the provided smooth(past, curr) function.
+  // Build a render state from a past (remote) tick and current (local) tick.
   compute_render_state(): S {
-    const curr_tick  = this.server_tick();
-    const tick_ms    = 1000 / this.tick_rate;
-    const tol_ticks  = Math.ceil(this.tolerance / tick_ms);
-    const rtt_ms     = client.ping();
-    const half_rtt   = isFinite(rtt_ms) ? Math.ceil((rtt_ms / 2) / tick_ms) : 0;
-    const past_ticks = Math.max(tol_ticks, half_rtt + 1);
-    const past_tick  = Math.max(0, curr_tick - past_ticks);
+    const curr_tick   = this.server_tick();
+    const tick_ms     = 1000 / this.tick_rate;
+    const tol_ticks   = Math.ceil(this.tolerance / tick_ms);
+    const rtt_ms      = client.ping();
+    const half_rtt    = isFinite(rtt_ms)
+      ? Math.ceil((rtt_ms / 2) / tick_ms)
+      : 0;
+    const remote_lag  = Math.max(tol_ticks, half_rtt + 1);
+    const remote_tick = Math.max(0, curr_tick - remote_lag);
 
-    const past_state = this.compute_state_at(past_tick);
-    const curr_state = this.compute_state_at(curr_tick);
+    const remote_state = this.compute_state_at(remote_tick);
+    const local_state  = this.compute_state_at(curr_tick);
 
-    return this.smooth(past_state, curr_state);
+    return this.smooth(remote_state, local_state);
   }
 
+  // Return the authoritative time of the first post (index 0).
   initial_time(): number | null {
     if (this.initial_time_value !== null) {
       return this.initial_time_value;
     }
-    const info = this.room_posts.get(0);
-    if (!info) {
+    const post = this.remote_posts.get(0);
+    if (!post) {
       return null;
     }
-    const t = this.official_time(info.post);
+    const t = this.official_time(post);
     this.initial_time_value = t;
     this.initial_tick_value = this.time_to_tick(t);
     return t;
   }
 
+  // Return the authoritative tick of the first post (index 0).
   initial_tick(): number | null {
     if (this.initial_tick_value !== null) {
       return this.initial_tick_value;
@@ -396,6 +449,7 @@ export class Vibi<S, P> {
     return this.initial_tick_value;
   }
 
+  // Compute state at an arbitrary tick, using snapshots when enabled.
   compute_state_at(at_tick: number): S {
     const initial_tick = this.initial_tick();
 
@@ -414,23 +468,25 @@ export class Vibi<S, P> {
     this.ensure_snapshots(at_tick, initial_tick);
 
     const start_tick = this.snapshot_start_tick;
-    if (start_tick === null || this.snapshots.length === 0) {
+    if (start_tick === null || this.snapshots.size === 0) {
       return this.init;
     }
 
     if (at_tick < start_tick) {
-      return this.snapshots[0];
+      return this.snapshots.get(start_tick) ?? this.init;
     }
 
     const stride = this.snapshot_stride;
+    const end_tick = start_tick + (this.snapshots.size - 1) * stride;
+    const max_index = Math.floor((end_tick - start_tick) / stride);
     const snap_index = Math.floor((at_tick - start_tick) / stride);
-    const index = Math.min(snap_index, this.snapshots.length - 1);
+    const index = Math.min(snap_index, max_index);
     const snap_tick = start_tick + index * stride;
-    const base_state = this.snapshots[index];
+    const base_state = this.snapshots.get(snap_tick) ?? this.init;
     return this.advance_state(base_state, snap_tick, at_tick);
   }
 
-  // Post data to the room
+  // Post data to the room.
   post(data: P): void {
     const name = client.post(this.room, data);
     const t    = this.server_time();
@@ -447,6 +503,7 @@ export class Vibi<S, P> {
     this.add_local_post(name, local_post);
   }
 
+  // Convenience for compute_state_at(current_server_tick).
   compute_current_state(): S {
     return this.compute_state_at(this.server_tick());
   }
