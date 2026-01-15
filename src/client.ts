@@ -1,3 +1,5 @@
+import { WS_URL } from "./config.ts";
+
 type TimeSync = {
   clock_offset: number;     // difference between server clock and local clock
   lowest_ping: number;      // best round-trip time achieved so far
@@ -12,7 +14,7 @@ const time_sync: TimeSync = {
   last_ping: Infinity,
 };
 
-const ws = new WebSocket(`ws://${window.location.hostname}:8080`);
+const ws = new WebSocket(WS_URL);
 
 type MessageHandler = (message: any) => void;
 const room_watchers = new Map<string, MessageHandler>();
