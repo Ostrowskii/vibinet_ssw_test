@@ -3,6 +3,8 @@ node_modules/
 
 # Build outputs
 dist/
+!walkers/dist/
+!walkers/dist/**
 coverage/
 
 # TypeScript incremental build files
